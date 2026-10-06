@@ -1,0 +1,79 @@
+name: 打包與測試（Windows）
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-and-test
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 安裝測試工具（Playwright，使用測試機內建的 Edge / Chrome）
+        working-directory: tests
+        run: npm install --no-save --no-package-lock playwright-core@1
+
+      - name: 打包完整版（下載 MediaMTX、OBS 免安裝版、VC++ 執行階段）
+        shell: powershell
+        env:
+          CB_NONINTERACTIVE: '1'
+          CB_ZIP_OUT: ${{ github.workspace }}\dist\ClassroomBroadcaster-full.zip
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          & .\scripts\build.ps1
+          if (-not (Test-Path $env:CB_ZIP_OUT)) { throw 'zip not created' }
+          Get-Item $env:CB_ZIP_OUT | Select-Object Name, Length
+          Get-Content mediamtx.version.txt, obs.version.txt
+
+      - name: 自動化測試
+        shell: powershell
+        env:
+          CB_NONINTERACTIVE: '1'
+        run: '& .\tests\ci.ps1'
+
+      - name: 上傳測試報告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report
+          path: tests/out
+          retention-days: 30
+
+      - name: 上傳完整版
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClassroomBroadcaster-full
+          path: dist/ClassroomBroadcaster-full.zip
+          compression-level: 0
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: 發布到 Releases（測試全部通過時）
+        if: success() && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          MTX=$(cat mediamtx.version.txt | tr -d '\r\n')
+          OBSV=$(cat obs.version.txt | tr -d '\r\n')
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest dist/ClassroomBroadcaster-full.zip \
+            --title "ClassroomBroadcaster 完整版（$(date +%Y-%m-%d)）" \
+            --notes "內含 MediaMTX ${MTX}、OBS Studio ${OBSV}（免安裝）、VC++ 執行階段。解壓縮後：簡易版點 lite-start.bat；OBS 版點 start.bat。" \
+            --latest

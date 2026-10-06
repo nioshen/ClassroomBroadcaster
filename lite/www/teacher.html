@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>教室直播 教師端</title>
+<style>
+  :root { --bg:#0e1116; --panel:#161b22; --fg:#e6edf3; --muted:#8b949e; --line:#30363d; --btn:#21262d;
+          --accent:#2f81f7; --ok:#3fb950; --warn:#d29922; --err:#f85149; }
+  * { box-sizing: border-box; }
+  body { margin:0; min-height:100vh; background:var(--bg); color:var(--fg);
+         font-family:"Microsoft JhengHei UI","Microsoft JhengHei","Noto Sans TC",system-ui,sans-serif; }
+  main { max-width:760px; margin:0 auto; padding:20px 16px 40px; }
+  h1 { font-size:22px; margin:4px 0 16px; display:flex; align-items:center; gap:10px; }
+  .dot { width:12px; height:12px; border-radius:50%; background:var(--muted); display:inline-block; }
+  .dot.live { background:var(--err); box-shadow:0 0 0 4px rgba(248,81,73,.25); }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:14px; }
+  .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  .label { color:var(--muted); font-size:13px; min-width:64px; }
+  button { font:inherit; color:var(--fg); background:var(--btn); border:1px solid var(--line); border-radius:8px;
+           padding:7px 14px; cursor:pointer; }
+  button.sel { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button:disabled { opacity:.45; cursor:default; }
+  #mainBtn { width:100%; font-size:20px; padding:16px; border-radius:12px; background:var(--accent); border-color:var(--accent); color:#fff; }
+  #mainBtn.stop { background:#b62324; border-color:#b62324; }
+  .stats { display:grid; grid-template-columns:repeat(4, 1fr); gap:8px; }
+  .stat { background:var(--bg); border:1px solid var(--line); border-radius:10px; padding:10px; text-align:center; }
+  .stat b { display:block; font-size:22px; font-variant-numeric:tabular-nums; }
+  .stat span { color:var(--muted); font-size:12px; }
+  #url { font-size:20px; color:var(--ok); word-break:break-all; user-select:all; }
+  #preview { width:100%; aspect-ratio:16/9; background:#000; border-radius:8px; display:block; }
+  .msg { padding:10px 12px; border-radius:8px; margin-bottom:14px; font-size:14px; line-height:1.6; display:none; }
+  .msg.show { display:block; }
+  .msg.err { background:rgba(248,81,73,.12); border:1px solid rgba(248,81,73,.4); }
+  .msg.info { background:rgba(47,129,247,.12); border:1px solid rgba(47,129,247,.4); }
+  .tip { color:var(--muted); font-size:13px; line-height:1.8; margin:8px 0 0; }
+  @media (max-width:560px) { .stats { grid-template-columns:repeat(2, 1fr); } }
+</style>
+</head>
+<body>
+<main>
+  <h1><span class="dot" id="liveDot"></span><span id="title">教室直播．教師端</span></h1>
+
+  <div class="msg err" id="err"></div>
+  <div class="msg info" id="info"></div>
+
+  <div class="panel">
+    <div class="row" style="margin-bottom:10px">
+      <span class="label">直播頻道</span>
+      <button data-room="teacher1">教師 1</button>
+      <button data-room="teacher2">教師 2</button>
+    </div>
+    <div class="row">
+      <span class="label">畫質</span>
+      <button data-q="std">標準（30fps）</button>
+      <button data-q="eco">省頻寬（15fps）</button>
+      <button data-q="hi">高畫質</button>
+    </div>
+  </div>
+
+  <button id="mainBtn">開始分享畫面</button>
+  <p class="tip">按下後請選「<b>整個螢幕</b>」再按「分享」。開始直播後可以把這個視窗縮到最小，不要關閉它。</p>
+
+  <div class="panel" style="margin-top:14px">
+    <div class="stats">
+      <div class="stat"><b id="sViewers">0</b><span>觀看人數</span></div>
+      <div class="stat"><b id="sFps">–</b><span>每秒畫格</span></div>
+      <div class="stat"><b id="sRate">–</b><span>位元率 Mbps</span></div>
+      <div class="stat"><b id="sRes">–</b><span>解析度</span></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="label" style="margin-bottom:6px">學生觀看網址</div>
+    <div id="url">–</div>
+  </div>
+
+  <div class="panel">
+    <div class="label" style="margin-bottom:6px">預覽（學生看到的畫面）</div>
+    <video id="preview" muted autoplay playsinline></video>
+  </div>
+</main>
+
+<script>
+(() => {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  const params = new URLSearchParams(location.search);
+  const QUALITY = {
+    std: { fps: 30, bitrate: 4000000 },
+    eco: { fps: 15, bitrate: 2000000 },
+    hi:  { fps: 30, bitrate: 6000000 },
+  };
+  let room = params.get('room') === 'teacher2' ? 'teacher2' : 'teacher1';
+  let quality = 'std';
+  let stream = null, worker = null, live = false, wsOpen = false;
+
+  function showErr(t) { $('err').textContent = t; $('err').classList.toggle('show', !!t); }
+  function showInfo(t) { $('info').textContent = t; $('info').classList.toggle('show', !!t); }
+
+  // ---- support check ----
+  const problems = [];
+  if (!window.isSecureContext) problems.push('這個頁面不是安全來源，無法擷取螢幕。主教師機請用「lite-start.bat」開啟，第二教師機請用「lite-teacher2.bat」開啟。');
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) problems.push('此瀏覽器不支援螢幕分享。');
+  if (!('VideoEncoder' in window) || !('MediaStreamTrackProcessor' in window)) problems.push('此瀏覽器不支援即時編碼，請使用最新版 Microsoft Edge 或 Google Chrome。');
+  if (problems.length) { showErr(problems.join('\n')); $('mainBtn').disabled = true; }
+
+  function renderButtons() {
+    document.querySelectorAll('[data-room]').forEach(b => {
+      b.classList.toggle('sel', b.dataset.room === room);
+      b.disabled = live;
+    });
+    document.querySelectorAll('[data-q]').forEach(b => b.classList.toggle('sel', b.dataset.q === quality));
+    $('mainBtn').textContent = live ? '停止分享' : '開始分享畫面';
+    $('mainBtn').classList.toggle('stop', live);
+    $('liveDot').classList.toggle('live', live && wsOpen);
+    $('title').textContent = '教室直播．教師端（' + (room === 'teacher1' ? '教師 1' : '教師 2') + '）' + (live ? (wsOpen ? '　直播中' : '　連線中…') : '');
+    document.title = (live ? '● 直播中 - ' : '') + '教室直播 教師端';
+  }
+  document.querySelectorAll('[data-room]').forEach(b => b.onclick = () => { room = b.dataset.room; renderButtons(); });
+  document.querySelectorAll('[data-q]').forEach(b => b.onclick = () => {
+    quality = b.dataset.q; renderButtons();
+    if (worker) worker.postMessage(Object.assign({ cmd: 'settings' }, QUALITY[quality]));
+  });
+
+  function testStream() {
+    // ?test=1 : animated test pattern with a clock (for latency testing without screen capture)
+    const c = document.createElement('canvas'); c.width = 1280; c.height = 720;
+    const g = c.getContext('2d');
+    setInterval(() => {
+      g.fillStyle = '#1e1e1e'; g.fillRect(0, 0, c.width, c.height);
+      g.fillStyle = '#9cdcfe'; g.font = '64px monospace';
+      g.fillText('T=' + Date.now(), 60, 200);
+      g.fillStyle = '#ce9178'; g.fillRect((Date.now() / 5) % c.width, 400, 80, 80);
+    }, 33);
+    return c.captureStream(30);
+  }
+
+  async function start() {
+    showErr(''); showInfo('');
+    const q = QUALITY[quality];
+    try {
+      stream = params.get('test') ? testStream() : await navigator.mediaDevices.getDisplayMedia({
+        video: { displaySurface: 'monitor', cursor: 'always', frameRate: { ideal: 30, max: 30 },
+                 width: { max: 1920 }, height: { max: 1080 } },
+        audio: false,
+        selfBrowserSurface: 'exclude',
+        surfaceSwitching: 'include',
+      });
+    } catch (e) {
+      if (e && e.name !== 'NotAllowedError') showErr('無法擷取螢幕：' + e.message);
+      return;
+    }
+    const track = stream.getVideoTracks()[0];
+    try { track.contentHint = 'text'; } catch (e) {}        // optimise for sharp text
+    track.addEventListener('ended', stop);
+    $('preview').srcObject = stream;
+
+    const processor = new MediaStreamTrackProcessor({ track });
+    worker = new Worker('teacher-worker.js');
+    worker.onmessage = onWorker;
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    worker.postMessage({ cmd: 'start', readable: processor.readable, wsUrl: proto + '//' + location.host + '/ws/pub/' + room,
+                         fps: q.fps, bitrate: q.bitrate, keySec: 2, codec: params.get('codec') || '' }, [processor.readable]);
+    live = true; wsOpen = false;
+    renderButtons();
+  }
+
+  function stop() {
+    if (worker) { worker.postMessage({ cmd: 'stop' }); setTimeout(((w) => () => w.terminate())(worker), 500); worker = null; }
+    if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+    $('preview').srcObject = null;
+    live = false; wsOpen = false;
+    $('sFps').textContent = '–'; $('sRate').textContent = '–'; $('sRes').textContent = '–';
+    renderButtons();
+  }
+
+  function onWorker(e) {
+    const m = e.data;
+    if (m.type === 'stats') {
+      $('sFps').textContent = m.fps;
+      $('sRate').textContent = (m.kbps / 1000).toFixed(1);
+      $('sRes').textContent = m.width ? m.width + '×' + m.height : '–';
+      $('sRes').title = m.codec || '';
+      if (m.wsOpen !== wsOpen) { wsOpen = m.wsOpen; renderButtons(); }
+    } else if (m.type === 'ws') {
+      wsOpen = m.open; renderButtons();
+      showInfo(m.open ? '' : '與直播伺服器的連線中斷，正在重新連線…（請確認黑色狀態視窗沒有被關閉）');
+    } else if (m.type === 'error') {
+      showErr(m.message);
+    } else if (m.type === 'ended') {
+      stop();
+    }
+  }
+
+  $('mainBtn').onclick = () => (live ? stop() : start());
+  window.addEventListener('beforeunload', (e) => { if (live) { e.preventDefault(); e.returnValue = ''; } });
+
+  async function poll() {
+    try {
+      const r = await fetch('/api/status', { cache: 'no-store' });
+      const s = await r.json();
+      if (s.studentUrl) $('url').textContent = s.studentUrl + (room === 'teacher2' ? '?t=teacher2' : '');
+      const me = (s.rooms || []).find(x => x.name === room);
+      $('sViewers').textContent = me ? me.viewers : 0;
+    } catch (e) {}
+  }
+  setInterval(poll, 2000);
+  poll();
+  renderButtons();
+  if (params.get('test') && params.get('autostart')) start();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,124 @@
+###############################################################################
+# ClassroomBroadcaster － MediaMTX 設定檔
+# 用途：教師 OBS 以 WHIP 推流 → MediaMTX → 60 台學生瀏覽器以 WHEP 觀看
+#
+# 說明：
+# - 標記「AUTO」的兩行，start.bat 每次啟動時會依 settings.psd1 自動填入，
+#   產生 run\mediamtx.runtime.yml 再交給 MediaMTX 使用（AUTO-TEACHER2 同理）。
+#   若要手動執行 mediamtx.exe mediamtx.yml，請自行修改這兩行。
+# - 需要 MediaMTX v1.9 以上（設定格式以目前版本為準）。
+###############################################################################
+
+#------------------------------------------------------------------------------
+# 一般設定
+#------------------------------------------------------------------------------
+logLevel: info
+logDestinations: [file]
+logFile: logs/mediamtx.log
+
+readTimeout: 10s
+writeTimeout: 10s
+# 每位觀看者的傳送佇列；60 人區網足夠，畫面偶爾卡頓可改 1024
+writeQueueSize: 512
+udpMaxPayloadSize: 1472
+
+#------------------------------------------------------------------------------
+# 權限：學生只能看、只有教師機能推流、API 只限本機
+#------------------------------------------------------------------------------
+authMethod: internal
+authInternalUsers:
+  # 學生（任何 IP）：只能觀看
+  - user: any
+    pass:
+    ips: []
+    permissions:
+      - action: read
+
+  # 教師機：只有這些 IP 可以推流（本機 + settings.psd1 的 PublisherIPs）
+  - user: any
+    pass:
+    ips: ['127.0.0.1', '::1'] # AUTO-PUBLISHERS
+    permissions:
+      - action: publish
+
+  # 第二教師機：推流到 teacher2（PublisherIPs 留空 = 區網內任何電腦都可以；有填就只限那些 IP）
+  - user: any
+    pass:
+    ips: [] # AUTO-TEACHER2
+    permissions:
+      - action: publish
+        path: teacher2
+
+  # 本機管理：給 start.bat 讀取觀看人數
+  - user: any
+    pass:
+    ips: ['127.0.0.1', '::1']
+    permissions:
+      - action: api
+      - action: metrics
+
+#------------------------------------------------------------------------------
+# Control API（只聽本機，用於顯示觀看人數）
+#------------------------------------------------------------------------------
+api: true
+apiAddress: 127.0.0.1:9997
+metrics: false
+pprof: false
+playback: false
+
+#------------------------------------------------------------------------------
+# 用不到的協定全部關閉，減少開放埠
+#------------------------------------------------------------------------------
+rtsp: false
+rtmp: false
+srt: false
+
+#------------------------------------------------------------------------------
+# WebRTC（主要觀看方式，延遲約 0.2–0.5 秒）
+#------------------------------------------------------------------------------
+webrtc: true
+webrtcAddress: :8889
+webrtcEncryption: false
+webrtcAllowOrigins: ['*']
+# 所有學生共用這一個 UDP 埠傳影像（防火牆需開放 UDP 8189）
+webrtcLocalUDPAddress: :8189
+webrtcLocalTCPAddress: ''
+webrtcIPsFromInterfaces: true
+webrtcIPsFromInterfacesList: []
+# 教室區網 IP；start.bat 會自動填入偵測到的 IP
+webrtcAdditionalHosts: [] # AUTO-HOST
+# 區網直連，不需要 STUN/TURN
+webrtcICEServers2: []
+webrtcHandshakeTimeout: 10s
+webrtcTrackGatherTimeout: 2s
+
+#------------------------------------------------------------------------------
+# LL-HLS（備援用：WebRTC 連不上時，延遲約 1–3 秒）
+# 網址：http://伺服器IP:8888/teacher1
+#------------------------------------------------------------------------------
+hls: true
+hlsAddress: :8888
+hlsEncryption: false
+hlsAllowOrigins: ['*']
+hlsAlwaysRemux: false
+hlsVariant: lowLatency
+hlsSegmentCount: 7
+# 需 ≥ OBS 關鍵幀間隔（建議 OBS 設 1 秒）
+hlsSegmentDuration: 1s
+hlsPartDuration: 200ms
+hlsSegmentMaxSize: 50M
+
+#------------------------------------------------------------------------------
+# 串流路徑：只允許下面列出的名稱，其他路徑一律拒絕
+#------------------------------------------------------------------------------
+pathDefaults:
+  source: publisher
+  # OBS 斷線重推時可直接取代舊的連線
+  overridePublisher: true
+  record: false
+
+paths:
+  # 教師機 1：OBS 推到 http://127.0.0.1:8889/teacher1/whip
+  teacher1:
+  # 教師機 2：OBS 推到 http://伺服器IP:8889/teacher2/whip
+  teacher2:

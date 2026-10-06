@@ -1,0 +1,15 @@
+# 由 build.bat 下載或執行時產生的檔案（不放進原始碼倉庫）
+/obs/
+/vcredist/
+/mediamtx.exe
+/mediamtx.version.txt
+/obs.version.txt
+/packages/*.zip
+/packages/*.exe
+/_obs*/
+/run/
+/logs/
+/deploy/
+/dist/
+/tests/node_modules/
+/tests/out/

@@ -1,0 +1,448 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>教室直播</title>
+<style>
+  :root {
+    --bg: #0e1116;
+    --bar: rgba(22, 27, 34, 0.92);
+    --fg: #e6edf3;
+    --muted: #8b949e;
+    --line: #30363d;
+    --btn: #21262d;
+    --btn-hover: #30363d;
+    --accent: #2f81f7;
+    --ok: #3fb950;
+    --warn: #d29922;
+    --err: #f85149;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+    font-family: "Microsoft JhengHei UI", "Microsoft JhengHei", "Noto Sans TC", system-ui, sans-serif;
+    overflow: hidden; }
+
+  #stage { position: fixed; inset: 0; overflow: hidden; background: #000; touch-action: none; }
+  #stage.zoomed { cursor: grab; }
+  #stage.dragging { cursor: grabbing; }
+  #video { position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+    object-fit: contain; transform-origin: 0 0; background: #000; }
+
+  /* 上方工具列 */
+  #bar { position: fixed; top: 0; left: 0; right: 0; display: flex; align-items: center; gap: 8px;
+    flex-wrap: wrap; padding: 8px 10px; background: var(--bar); border-bottom: 1px solid var(--line);
+    transition: opacity .25s, transform .25s; z-index: 10; font-size: 14px; }
+  #bar.hidden { opacity: 0; transform: translateY(-100%); pointer-events: none; }
+  .group { display: flex; align-items: center; gap: 4px; }
+  .sep { width: 1px; height: 22px; background: var(--line); margin: 0 4px; }
+  .spacer { flex: 1; }
+  button { font: inherit; color: var(--fg); background: var(--btn); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 10px; cursor: pointer; white-space: nowrap; }
+  button:hover { background: var(--btn-hover); }
+  button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .4; cursor: default; }
+  #status { display: flex; align-items: center; gap: 6px; color: var(--muted); white-space: nowrap; }
+  #dot { width: 10px; height: 10px; border-radius: 50%; background: var(--warn); flex: none; }
+  #dot.ok { background: var(--ok); }
+  #dot.err { background: var(--err); }
+  #zoomLabel { min-width: 48px; text-align: center; color: var(--muted); font-variant-numeric: tabular-nums; }
+  #stats { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .small { color: var(--muted); font-size: 12px; }
+
+  /* 等待/錯誤提示 */
+  #overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    pointer-events: none; z-index: 5; }
+  #overlay .card { background: rgba(22,27,34,.9); border: 1px solid var(--line); border-radius: 12px;
+    padding: 20px 28px; text-align: center; max-width: 420px; margin: 16px; }
+  #overlay .title { font-size: 20px; margin-bottom: 6px; }
+  #overlay .sub { color: var(--muted); font-size: 14px; line-height: 1.6; }
+  #overlay.hidden { display: none; }
+
+  /* 說明 */
+  #help { position: fixed; right: 10px; top: 56px; z-index: 11; background: var(--bar);
+    border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px; font-size: 13px;
+    line-height: 1.9; display: none; }
+  #help.show { display: block; }
+  kbd { background: var(--btn); border: 1px solid var(--line); border-radius: 4px; padding: 0 5px; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <video id="video" autoplay muted playsinline></video>
+</div>
+
+<div id="overlay">
+  <div class="card">
+    <div class="title" id="ovTitle">連線中…</div>
+    <div class="sub" id="ovSub">正在連線到教師電腦</div>
+  </div>
+</div>
+
+<div id="bar">
+  <div class="group" id="streamBtns"></div>
+  <div class="sep"></div>
+  <div id="status"><span id="dot"></span><span id="statusText">連線中</span></div>
+  <span id="stats"></span>
+  <div class="spacer"></div>
+  <div class="group">
+    <button id="zoomOut" title="縮小（-）">－</button>
+    <span id="zoomLabel">100%</span>
+    <button id="zoomIn" title="放大（+）">＋</button>
+    <button id="zoomReset" title="還原（0）">還原</button>
+  </div>
+  <div class="sep"></div>
+  <button id="pipBtn" title="子母畫面：浮在其他視窗上方（P）">子母畫面</button>
+  <button id="fsBtn" title="全螢幕（F）">全螢幕</button>
+  <button id="reBtn" title="重新連線（R）">重新連線</button>
+  <button id="helpBtn" title="說明（?）">?</button>
+</div>
+
+<div id="help">
+  <b>操作說明</b><br>
+  <kbd>滾輪</kbd> 以游標位置放大／縮小，放大後可<kbd>拖曳</kbd>移動<br>
+  <kbd>雙擊</kbd> 放大 2 倍／還原<br>
+  <kbd>P</kbd> 子母畫面（小視窗浮在編輯器上方）<br>
+  <kbd>F</kbd> 全螢幕　<kbd>R</kbd> 重新連線　<kbd>0</kbd> 還原縮放<br>
+  <kbd>Win</kbd>+<kbd>←</kbd>／<kbd>→</kbd> 讓本視窗佔半個螢幕<br>
+  <span class="small">畫面一直出不來？按 <kbd>R</kbd> 重新連線，或請老師確認直播程式已開啟。</span>
+</div>
+
+<script>
+(() => {
+  'use strict';
+
+  // ===== 設定 =====
+  // 可用網址參數覆寫：?t=teacher2  ?host=192.168.1.10:8080
+  const STREAMS = [
+    { id: 'teacher1', name: '教師 1' },
+    { id: 'teacher2', name: '教師 2' },
+  ];
+  const params = new URLSearchParams(location.search);
+  const HOST = params.get('host') || location.host || '127.0.0.1:8080';
+  const RETRY_MS = 1500;           // 斷線後重連間隔
+  const STALL_MS = 6000;           // 開播中超過 6 秒沒有收到畫面就重連
+
+  // ===== 元素 =====
+  const $ = (id) => document.getElementById(id);
+  const video = $('video'), stage = $('stage'), bar = $('bar');
+  const dot = $('dot'), statusText = $('statusText'), statsEl = $('stats');
+  const overlay = $('overlay'), ovTitle = $('ovTitle'), ovSub = $('ovSub');
+
+  // ===== 狀態 =====
+  let current = STREAMS.some(s => s.id === params.get('t')) ? params.get('t') : STREAMS[0].id;
+  let ws = null, gen = 0, retryTimer = null;
+  let ms = null, sb = null, queue = [], online = false, playing = false;
+  let lastMsgTime = 0, bytesRx = 0;
+
+  // ===== 介面 =====
+  function setStatus(kind, text) {
+    dot.className = kind === 'ok' ? 'ok' : kind === 'err' ? 'err' : '';
+    statusText.textContent = text;
+  }
+  function showOverlay(title, sub) {
+    ovTitle.textContent = title; ovSub.textContent = sub || '';
+    overlay.classList.remove('hidden');
+  }
+  function hideOverlay() { overlay.classList.add('hidden'); }
+  function streamName(id) { return (STREAMS.find(s => s.id === id) || {}).name || id; }
+
+  function renderStreamBtns() {
+    const box = $('streamBtns');
+    box.innerHTML = '';
+    STREAMS.forEach(s => {
+      const b = document.createElement('button');
+      b.textContent = s.name;
+      b.className = s.id === current ? 'active' : '';
+      b.onclick = () => switchStream(s.id);
+      box.appendChild(b);
+    });
+  }
+
+  function switchStream(id) {
+    if (id === current) return;
+    current = id;
+    const u = new URL(location.href);
+    u.searchParams.set('t', id);
+    history.replaceState(null, '', u);
+    renderStreamBtns();
+    resetZoom();
+    connect();
+  }
+
+  // ===== WebSocket + Media Source 播放 =====
+  function wsUrl() { return (location.protocol === 'https:' ? 'wss://' : 'ws://') + HOST + '/ws/view/' + current; }
+
+  function resetMedia() {
+    queue = [];
+    if (sb) { try { sb.abort(); } catch (e) {} }
+    sb = null;
+    if (ms && ms.readyState === 'open') { try { ms.endOfStream(); } catch (e) {} }
+    ms = null;
+    playing = false;
+  }
+
+  function teardown() {
+    clearTimeout(retryTimer);
+    if (ws) { ws.onclose = ws.onmessage = ws.onerror = null; try { ws.close(); } catch (e) {} ws = null; }
+    resetMedia();
+  }
+
+  function scheduleRetry(ms_) {
+    clearTimeout(retryTimer);
+    const myGen = gen;
+    retryTimer = setTimeout(() => { if (myGen === gen) connect(); }, ms_);
+  }
+
+  function showOffline() {
+    online = false;
+    resetMedia();
+    video.removeAttribute('src');
+    try { video.load(); } catch (e) {}
+    setStatus('wait', `${streamName(current)} 尚未開始直播`);
+    showOverlay(`${streamName(current)} 尚未開始直播`, '老師開始直播後，畫面會自動出現，不用重新整理。');
+  }
+
+  function connect() {
+    teardown();
+    const myGen = ++gen;
+    setStatus('wait', `連線中（${streamName(current)}）`);
+    showOverlay('連線中…', `正在連線到 ${streamName(current)}`);
+    let sock;
+    try { sock = new WebSocket(wsUrl()); } catch (e) { scheduleRetry(RETRY_MS); return; }
+    sock.binaryType = 'arraybuffer';
+    ws = sock;
+    lastMsgTime = performance.now();
+
+    sock.onmessage = (ev) => {
+      if (myGen !== gen) return;
+      lastMsgTime = performance.now();
+      if (typeof ev.data === 'string') {
+        let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+        if (m.type === 'offline') showOffline();
+        else if (m.type === 'online') {
+          online = true;
+          if (!playing) { setStatus('wait', '老師已開播，載入畫面中…'); showOverlay('載入畫面中…', streamName(current)); }
+        }
+        return;
+      }
+      const u8 = new Uint8Array(ev.data);
+      bytesRx += u8.length;
+      online = true;
+      if (u8[0] === 1) {
+        const n = (u8[1] << 8) | u8[2];
+        const codec = new TextDecoder().decode(u8.subarray(3, 3 + n));
+        setupMedia(codec, u8.slice(3 + n));
+      } else if (ms) {
+        queue.push(u8.subarray(1));
+        if (queue.length > 600) { connect(); return; }   // 播放端跟不上：重新同步
+        pump();
+      }
+    };
+    sock.onclose = () => {
+      if (myGen !== gen) return;
+      ws = null;
+      setStatus('err', '與教師電腦的連線中斷，重新連線中…');
+      if (!playing) showOverlay('無法連線到教師電腦', `請確認老師已開啟直播程式。（${HOST}）`);
+      scheduleRetry(RETRY_MS);
+    };
+  }
+
+  function setupMedia(codec, init) {
+    resetMedia();
+    const mime = `video/mp4; codecs="${codec}"`;
+    if (!window.MediaSource || !MediaSource.isTypeSupported(mime)) {
+      setStatus('err', '不支援的影像格式');
+      showOverlay('這個瀏覽器無法播放', `不支援 ${codec}，請使用最新版 Edge 或 Chrome。`);
+      return;
+    }
+    const m = new MediaSource();
+    ms = m;
+    queue = [init];
+    const url = URL.createObjectURL(m);
+    video.src = url;
+    m.addEventListener('sourceopen', () => {
+      URL.revokeObjectURL(url);
+      if (ms !== m) return;
+      try {
+        sb = m.addSourceBuffer(mime);
+        sb.mode = 'segments';
+      } catch (e) { console.warn(e); scheduleRetry(RETRY_MS); return; }
+      sb.addEventListener('updateend', pump);
+      pump();
+    }, { once: true });
+  }
+
+  function pump() {
+    if (!sb || sb.updating || !ms || ms.readyState !== 'open') return;
+    const b = sb.buffered;
+    if (b.length && video.currentTime - b.start(0) > 30) {          // 只保留最近的畫面，避免記憶體用量增加
+      try { sb.remove(b.start(0), video.currentTime - 10); return; } catch (e) {}
+    }
+    if (!queue.length) return;
+    let chunk;
+    if (queue.length === 1) chunk = queue[0];
+    else {                                                          // 累積多段時一次附加
+      let len = 0;
+      for (const q of queue) len += q.length;
+      chunk = new Uint8Array(len);
+      let o = 0;
+      for (const q of queue) { chunk.set(q, o); o += q.length; }
+    }
+    queue = [];
+    try { sb.appendBuffer(chunk); }
+    catch (e) {
+      console.warn(e);
+      if (e.name === 'QuotaExceededError') { queue.unshift(chunk); try { sb.remove(0, Math.max(0, video.currentTime - 2)); } catch (_) {} }
+      else connect();
+    }
+  }
+
+  // 跟上最新畫面：落後太多就跳到最新，稍微落後就加速播放
+  setInterval(() => {
+    if (!sb || !video.buffered.length) return;
+    const n = video.buffered.length;
+    const end = video.buffered.end(n - 1), startLast = video.buffered.start(n - 1);
+    const lag = end - video.currentTime;
+    if (video.currentTime < startLast || lag > 1.2) video.currentTime = Math.max(startLast, end - 0.05);
+    else if (lag > 0.35) video.playbackRate = 1.15;
+    else if (lag < 0.15) video.playbackRate = 1.0;
+    if (video.paused) video.play().catch(() => {});
+  }, 250);
+
+  video.addEventListener('playing', () => {
+    playing = true;
+    hideOverlay();
+    setStatus('ok', `直播中（${streamName(current)}）`);
+  });
+
+  // ===== 監看：統計數據 + 卡住自動重連 =====
+  setInterval(() => {
+    const mbps = bytesRx * 8 / 1e6;
+    bytesRx = 0;
+    if (ws && online && performance.now() - lastMsgTime > STALL_MS) {
+      setStatus('wait', '畫面停止更新，重新連線中…');
+      connect();
+      return;
+    }
+    if (playing && video.buffered.length) {
+      const lag = video.buffered.end(video.buffered.length - 1) - video.currentTime;
+      statsEl.textContent = `${video.videoWidth}×${video.videoHeight}　${mbps.toFixed(1)} Mbps　緩衝 ${Math.max(0, Math.round(lag * 1000))} ms`;
+    } else statsEl.textContent = '';
+  }, 1000);
+
+  // ===== 縮放與拖曳 =====
+  let scale = 1, tx = 0, ty = 0;
+  const MIN = 1, MAX = 5;
+
+  function applyTransform() {
+    const w = stage.clientWidth, h = stage.clientHeight;
+    tx = Math.min(0, Math.max(w - w * scale, tx));
+    ty = Math.min(0, Math.max(h - h * scale, ty));
+    video.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+    $('zoomLabel').textContent = Math.round(scale * 100) + '%';
+    stage.classList.toggle('zoomed', scale > 1);
+  }
+  function zoomAt(newScale, cx, cy) {
+    newScale = Math.min(MAX, Math.max(MIN, newScale));
+    tx = cx - (cx - tx) * (newScale / scale);
+    ty = cy - (cy - ty) * (newScale / scale);
+    scale = newScale;
+    applyTransform();
+  }
+  function resetZoom() { scale = 1; tx = 0; ty = 0; applyTransform(); }
+  function centerZoom(f) { zoomAt(scale * f, stage.clientWidth / 2, stage.clientHeight / 2); }
+
+  stage.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    zoomAt(scale * (e.deltaY < 0 ? 1.15 : 1 / 1.15), e.clientX, e.clientY);
+  }, { passive: false });
+
+  stage.addEventListener('dblclick', (e) => {
+    if (scale > 1) resetZoom(); else zoomAt(2, e.clientX, e.clientY);
+  });
+
+  let drag = null;
+  stage.addEventListener('pointerdown', (e) => {
+    if (scale <= 1) return;
+    drag = { x: e.clientX, y: e.clientY, tx, ty };
+    stage.setPointerCapture(e.pointerId);
+    stage.classList.add('dragging');
+  });
+  stage.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    tx = drag.tx + (e.clientX - drag.x);
+    ty = drag.ty + (e.clientY - drag.y);
+    applyTransform();
+  });
+  const endDrag = () => { drag = null; stage.classList.remove('dragging'); };
+  stage.addEventListener('pointerup', endDrag);
+  stage.addEventListener('pointercancel', endDrag);
+  window.addEventListener('resize', applyTransform);
+
+  $('zoomIn').onclick = () => centerZoom(1.25);
+  $('zoomOut').onclick = () => centerZoom(1 / 1.25);
+  $('zoomReset').onclick = resetZoom;
+
+  // ===== 子母畫面 / 全螢幕 / 重連 =====
+  async function togglePip() {
+    try {
+      if (document.pictureInPictureElement) await document.exitPictureInPicture();
+      else if (video.readyState >= 1) await video.requestPictureInPicture();
+    } catch (e) { console.warn(e); }
+  }
+  async function toggleFs() {
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else await document.documentElement.requestFullscreen();
+    } catch (e) { console.warn(e); }
+  }
+  $('pipBtn').onclick = togglePip;
+  $('fsBtn').onclick = toggleFs;
+  $('reBtn').onclick = () => connect();
+  $('helpBtn').onclick = () => $('help').classList.toggle('show');
+  if (!document.pictureInPictureEnabled) $('pipBtn').disabled = true;
+  video.addEventListener('enterpictureinpicture', () => $('pipBtn').classList.add('active'));
+  video.addEventListener('leavepictureinpicture', () => $('pipBtn').classList.remove('active'));
+  document.addEventListener('fullscreenchange', () =>
+    $('fsBtn').classList.toggle('active', !!document.fullscreenElement));
+
+  document.addEventListener('keydown', (e) => {
+    if (e.ctrlKey || e.altKey || e.metaKey) return;
+    switch (e.key) {
+      case 'p': case 'P': togglePip(); break;
+      case 'f': case 'F': toggleFs(); break;
+      case 'r': case 'R': connect(); break;
+      case '0': resetZoom(); break;
+      case '+': case '=': centerZoom(1.25); break;
+      case '-': case '_': centerZoom(1 / 1.25); break;
+      case '?': $('help').classList.toggle('show'); break;
+      default:
+        if (/^[1-9]$/.test(e.key) && STREAMS[+e.key - 1]) switchStream(STREAMS[+e.key - 1].id);
+    }
+  });
+
+  // ===== 工具列自動隱藏 =====
+  let hideTimer = null;
+  function pokeBar() {
+    bar.classList.remove('hidden');
+    clearTimeout(hideTimer);
+    hideTimer = setTimeout(() => {
+      if (playing && !bar.matches(':hover') && !$('help').classList.contains('show')) bar.classList.add('hidden');
+    }, 2500);
+  }
+  document.addEventListener('mousemove', pokeBar);
+  document.addEventListener('keydown', pokeBar);
+
+  window.addEventListener('pagehide', teardown);
+
+  // ===== 開始 =====
+  renderStreamBtns();
+  applyTransform();
+  pokeBar();
+  connect();
+})();
+</script>
+</body>
+</html>
