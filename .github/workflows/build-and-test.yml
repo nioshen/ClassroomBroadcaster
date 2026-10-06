@@ -66,8 +66,9 @@ jobs:
           done
           exit 0
 
-      - name: 上傳完整版
-        if: always()
+      # 測試通過時 zip 會發布到 Releases（不佔 artifact 空間），只有失敗時才另存一份供除錯
+      - name: 上傳完整版（只在測試失敗時）
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: ClassroomBroadcaster-full
@@ -75,7 +76,7 @@ jobs:
             dist/ClassroomBroadcaster-full.zip
             dist/ClassroomBroadcaster-lite.zip
           compression-level: 0
-          retention-days: 30
+          retention-days: 3
           if-no-files-found: ignore
 
       - name: 發布到 Releases（測試全部通過時）
