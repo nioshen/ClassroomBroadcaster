@@ -5,6 +5,7 @@
 // channel: chrome | msedge
 import { chromium } from 'playwright-core';
 import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 const [, , mode = 'lite', channel = 'chrome'] = process.argv;
 const OUT = new URL('./out/', import.meta.url);
@@ -91,7 +92,7 @@ try {
     for (let i = 0; i < 3; i++) viewers.push(await open('http://127.0.0.1:8080/', 'viewer' + i));
     await sleep(8000);
     result.ok = await checkViewers(viewers);
-    await viewers[0].screenshot({ path: new URL(`${tag}-viewer.png`, OUT) });
+    await viewers[0].screenshot({ path: fileURLToPath(new URL(`${tag}-viewer.png`, OUT)) });
   }
 
   if (mode === 'lite') {
@@ -110,8 +111,8 @@ try {
       viewers: document.getElementById('sViewers').textContent,
       error: document.getElementById('err').textContent,
     }));
-    await teacher.screenshot({ path: new URL(`${tag}-teacher.png`, OUT) });
-    await viewers[0].screenshot({ path: new URL(`${tag}-viewer.png`, OUT) });
+    await teacher.screenshot({ path: fileURLToPath(new URL(`${tag}-teacher.png`, OUT)) });
+    await viewers[0].screenshot({ path: fileURLToPath(new URL(`${tag}-viewer.png`, OUT)) });
   }
 } catch (e) {
   result.errors.push('test: ' + (e && e.stack || e));
