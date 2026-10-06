@@ -54,6 +54,17 @@ jobs:
           path: tests/out
           retention-days: 30
 
+      - name: 在紀錄中顯示測試報告內容
+        if: always()
+        shell: bash
+        run: |
+          [ -d tests/out ] || exit 0
+          ls -la tests/out
+          for f in tests/out/*.json tests/out/*.log tests/out/*.err tests/out/*.md; do
+            [ -f "$f" ] && { echo "===== $f"; tail -c 20000 "$f"; echo; }
+          done
+          exit 0
+
       - name: 上傳完整版
         if: always()
         uses: actions/upload-artifact@v4
