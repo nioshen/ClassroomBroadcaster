@@ -9,6 +9,8 @@ import { fileURLToPath } from 'node:url';
 
 const [, , mode = 'lite', channel = 'chrome'] = process.argv;
 const OUT = new URL('./out/', import.meta.url);
+// page.screenshot() needs a string path (newer playwright-core rejects URL objects)
+const outPath = (name) => fileURLToPath(new URL(name, OUT));
 fs.mkdirSync(OUT, { recursive: true });
 const tag = `${mode}-${channel}`;
 const result = { mode, channel, ok: false, errors: [], viewers: [] };
@@ -32,7 +34,16 @@ async function viewerState(p) {
   return p.evaluate(() => {
     const v = document.querySelector('video');
     const q = v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality() : {};
+    // brightest pixel of a downscaled frame: 0 = black picture (e.g. screen capture of a sleeping monitor)
+    let maxLuma = 0;
+    try {
+      const c = document.createElement('canvas'); c.width = 160; c.height = 90;
+      const g = c.getContext('2d'); g.drawImage(v, 0, 0, 160, 90);
+      const d = g.getImageData(0, 0, 160, 90).data;
+      for (let i = 0; i < d.length; i += 4) maxLuma = Math.max(maxLuma, (d[i] + d[i + 1] + d[i + 2]) / 3);
+    } catch (e) {}
     return {
+      maxLuma: Math.round(maxLuma),
       status: document.getElementById('statusText')?.textContent,
       stats: document.getElementById('stats')?.textContent,
       width: v.videoWidth, height: v.videoHeight, paused: v.paused,
@@ -48,7 +59,9 @@ async function checkViewers(pages) {
   let ok = true;
   second.forEach((s, i) => {
     const advancing = s.frames > first[i].frames && s.time > first[i].time;
-    const good = s.width > 0 && !s.paused && advancing;
+    // GitHub Actions has no real desktop: OBS screen capture is black there, so only real PCs check the picture
+    const picture = s.maxLuma > 20 || !!process.env.GITHUB_ACTIONS;
+    const good = s.width > 0 && !s.paused && advancing && picture;
     if (!good) ok = false;
     result.viewers.push({ ...s, framesIn4s: s.frames - first[i].frames, ok: good });
   });
@@ -92,7 +105,7 @@ try {
     for (let i = 0; i < 3; i++) viewers.push(await open('http://127.0.0.1:8080/', 'viewer' + i));
     await sleep(8000);
     result.ok = await checkViewers(viewers);
-    await viewers[0].screenshot({ path: fileURLToPath(new URL(`${tag}-viewer.png`, OUT)) });
+    await viewers[0].screenshot({ path: outPath(`${tag}-viewer.png`) });
   }
 
   if (mode === 'lite') {
@@ -111,8 +124,8 @@ try {
       viewers: document.getElementById('sViewers').textContent,
       error: document.getElementById('err').textContent,
     }));
-    await teacher.screenshot({ path: fileURLToPath(new URL(`${tag}-teacher.png`, OUT)) });
-    await viewers[0].screenshot({ path: fileURLToPath(new URL(`${tag}-viewer.png`, OUT)) });
+    await teacher.screenshot({ path: outPath(`${tag}-teacher.png`) });
+    await viewers[0].screenshot({ path: outPath(`${tag}-viewer.png`) });
   }
 } catch (e) {
   result.errors.push('test: ' + (e && e.stack || e));

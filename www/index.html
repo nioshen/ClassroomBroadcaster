@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
 <title>教室直播</title>
 <style>
   :root {
@@ -126,7 +127,7 @@
 
   const RETRY_OFFLINE_MS = 2000;   // 老師尚未開播時，每 2 秒重試
   const RETRY_ERROR_MS = 3000;     // 連線錯誤時重試間隔
-  const STALL_LIMIT = 3;           // 連續 3 次（約 6 秒）沒有新畫面就重連
+  const STALL_LIMIT = 5;           // 連續 5 秒沒有新畫面就重連
 
   // ===== 元素 =====
   const $ = (id) => document.getElementById(id);
@@ -236,7 +237,8 @@
       const st = peer.connectionState;
       if (st === 'connected') {
         clearTimeout(discTimer);
-        setStatus('ok', `直播中（${streamName(current)}）`);
+        // 真的收到畫面才顯示「直播中」（由下方監看程式切換）；老師端剛斷線時伺服器可能還接受連線但沒有畫面
+        if (!playing) setStatus('wait', `已連線，等待畫面（${streamName(current)}）…`);
       } else if (st === 'disconnected') {
         setStatus('wait', '訊號中斷，等待恢復…');
         clearTimeout(discTimer);
@@ -288,15 +290,15 @@
     try { receiver.playoutDelayHint = 0; } catch (e) {}
   }
 
-  video.addEventListener('playing', () => { playing = true; hideOverlay(); });
-
-  // ===== 監看：統計數據 + 卡住自動重連 =====
+  // ===== 監看：統計數據 + 卡住自動重連（每秒檢查） =====
   setInterval(async () => {
     if (!pc || pc.connectionState !== 'connected') { statsEl.textContent = ''; return; }
     try {
       const report = await pc.getStats();
+      let found = false;
       report.forEach(s => {
         if (s.type !== 'inbound-rtp' || s.kind !== 'video') return;
+        found = true;
         const now = s.timestamp;
         const kbps = lastStatTime ? Math.round((s.bytesReceived - lastBytes) * 8 / (now - lastStatTime)) : 0;
         lastBytes = s.bytesReceived; lastStatTime = now;
@@ -306,18 +308,35 @@
         statsEl.textContent = `${res}　${fps} fps　${(kbps / 1000).toFixed(1)} Mbps　緩衝 ${buf} ms`;
 
         const frames = s.framesDecoded || 0;
-        if (frames === lastFrames) {
-          if (++stallCount >= STALL_LIMIT) {
-            setStatus('wait', '畫面停止更新，重新連線中…');
-            connect();
+        if (frames > 0 && frames > lastFrames) {
+          stallCount = 0;
+          if (!playing) {
+            playing = true;
+            hideOverlay();
+            setStatus('ok', `直播中（${streamName(current)}）`);
           }
         } else {
-          stallCount = 0;
+          checkStall();
         }
         lastFrames = frames;
       });
+      if (!found) checkStall();
     } catch (e) {}
-  }, 2000);
+  }, 1000);
+
+  // 沒有新畫面：2 秒後先提示學生，STALL_LIMIT 秒後重新連線（老師關掉 OBS 時，畫面不會只剩一片黑）
+  function checkStall() {
+    stallCount++;
+    if (stallCount === 2) {
+      playing = false;
+      setStatus('wait', '畫面暫停，等待老師的畫面…');
+      showOverlay('畫面暫停', '老師的直播畫面中斷，恢復後會自動出現，不用重新整理。');
+    }
+    if (stallCount >= STALL_LIMIT) {
+      setStatus('wait', '畫面停止更新，重新連線中…');
+      connect();
+    }
+  }
 
   // ===== 縮放與拖曳 =====
   let scale = 1, tx = 0, ty = 0;

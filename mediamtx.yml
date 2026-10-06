@@ -72,6 +72,8 @@ playback: false
 rtsp: false
 rtmp: false
 srt: false
+# MediaMTX 1.20 以後新增的 MoQ（會在資料夾產生 auto.crt / auto.key 並多開 8892、8893 埠），用不到
+moq: false
 
 #------------------------------------------------------------------------------
 # WebRTC（主要觀看方式，延遲約 0.2–0.5 秒）

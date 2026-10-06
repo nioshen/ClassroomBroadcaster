@@ -2,10 +2,14 @@
 # 在任何一台「有網路」的 Windows 10 / 11 電腦執行一次（不需系統管理員權限）：
 #   下載 MediaMTX、免安裝版 OBS Studio、Visual C++ 執行階段，放進這個資料夾，
 #   之後把整個資料夾（或產生的 zip）複製到教師機即可直接使用，不必再下載或安裝。
+# 同時會產生只有簡易版的 ClassroomBroadcaster-lite.zip。只要簡易版時用 -LiteOnly（不需網路、不下載任何東西）。
+param([switch]$LiteOnly)
 . (Join-Path $PSScriptRoot 'common.ps1')
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'   # PowerShell 5.1 顯示下載進度會讓下載慢很多
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+# PowerShell 5.1 預設會在 zip 內用「\」當路徑分隔，部分解壓縮工具不認得；改成標準的「/」（必須在載入 ZipFile 前設定）
+try { [AppContext]::SetSwitch('Switch.System.IO.Compression.ZipFile.UseBackslash', $false) } catch { }
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $Host.UI.RawUI.WindowTitle = 'ClassroomBroadcaster 完整版打包'
 Set-Location $Base
@@ -50,10 +54,45 @@ function Expand-Zip([string]$zip, [string]$dest) {
     [IO.Compression.ZipFile]::ExtractToDirectory($zip, $dest)
 }
 
+# zip 輸出位置：預設放在資料夾的上一層；CB_ZIP_OUT 可指定完整版 zip 的路徑，簡易版放在同一個資料夾
+$ZipOut = if ($env:CB_ZIP_OUT) { $env:CB_ZIP_OUT } else { Join-Path (Split-Path $Base -Parent) 'ClassroomBroadcaster-full.zip' }
+$LiteZipOut = Join-Path (Split-Path $ZipOut -Parent) 'ClassroomBroadcaster-lite.zip'
+
+# 簡易版 zip：只放簡易版需要的檔案（不含 OBS、MediaMTX），解壓縮後的資料夾名稱也標註 lite
+function New-LiteZip([string]$out) {
+    $stage = Join-Path $env:TEMP ('cbl_' + [guid]::NewGuid().ToString('N'))
+    $dst = Join-Path $stage 'ClassroomBroadcaster-lite'
+    New-Item -ItemType Directory -Force -Path (Join-Path $dst 'scripts') | Out-Null
+    foreach ($f in 'lite-start.bat', 'lite-teacher2.bat', 'settings.psd1') {
+        if (Test-Path (Join-Path $Base $f)) { Copy-Item (Join-Path $Base $f) $dst }
+    }
+    Copy-Item (Join-Path $Base 'README-lite.md') (Join-Path $dst 'README.md')
+    Copy-Item (Join-Path $Base 'lite') $dst -Recurse
+    foreach ($f in 'common.ps1', 'lite-start.ps1', 'lite-admin.ps1', 'lite-teacher2.ps1') {
+        Copy-Item (Join-Path $PSScriptRoot $f) (Join-Path $dst 'scripts')
+    }
+    if (Test-Path $out) { Remove-Item $out -Force }
+    New-Item -ItemType Directory -Force -Path (Split-Path $out -Parent) | Out-Null
+    [IO.Compression.ZipFile]::CreateFromDirectory($stage, $out, [IO.Compression.CompressionLevel]::Optimal, $false)
+    Remove-Item $stage -Recurse -Force
+    Say "已產生簡易版：$out" Green
+}
+
 Clear-Host
-Say '============ ClassroomBroadcaster 完整版打包 ============' Cyan
-Say '會下載：MediaMTX（約 15 MB）、OBS Studio 免安裝版（約 150 MB）、VC++ 執行階段（約 25 MB）'
+if ($LiteOnly) {
+    Say '============ ClassroomBroadcaster 簡易版打包 ============' Cyan
+    Say '不需網路，只打包簡易版需要的檔案。'
+} else {
+    Say '============ ClassroomBroadcaster 完整版打包 ============' Cyan
+    Say '會下載：MediaMTX（約 15 MB）、OBS Studio 免安裝版（約 150 MB）、VC++ 執行階段（約 25 MB）'
+}
 Say ''
+
+if ($LiteOnly) {
+    try { New-LiteZip $LiteZipOut } catch { Fail ("簡易版打包失敗：$($_.Exception.Message)") }
+    if (-not $NonInteractive) { Read-Host "`n按 Enter 關閉" }
+    exit 0
+}
 
 try {
     # ---------- 1. MediaMTX ----------
@@ -126,7 +165,7 @@ Say "`n================ 完整版準備完成 ================" Green
 Say "這個資料夾現在可以直接複製到教師機使用（不需網路、不需安裝）："
 Say "  $Base"
 if (Ask-YesNo "`n要另外產生一個 zip 檔方便複製嗎？" $true) {
-    $zipOut = if ($env:CB_ZIP_OUT) { $env:CB_ZIP_OUT } else { Join-Path (Split-Path $Base -Parent) 'ClassroomBroadcaster-full.zip' }
+    $zipOut = $ZipOut
     if (Test-Path $zipOut) { Remove-Item $zipOut -Force }
     Say '壓縮中…'
     # packages 內是下載的原始檔，教師機用不到，不放進 zip
@@ -135,8 +174,11 @@ if (Ask-YesNo "`n要另外產生一個 zip 檔方便複製嗎？" $true) {
     New-Item -ItemType Directory -Force -Path $dst | Out-Null
     Get-ChildItem $Base -Force | Where-Object { $_.Name -notin 'packages', 'dist', 'tests', '.git', '.github', '.gitignore' } |
         ForEach-Object { Copy-Item $_.FullName $dst -Recurse -Force }
+    # 這台電腦的 OBS 設定（螢幕解析度、紀錄檔）不帶走：每台教師機第一次啟動時會依自己的螢幕重新建立
+    if (Test-Path "$dst\obs\config") { Remove-Item "$dst\obs\config" -Recurse -Force }
     [IO.Compression.ZipFile]::CreateFromDirectory($stage, $zipOut, [IO.Compression.CompressionLevel]::Optimal, $false)
     Remove-Item $stage -Recurse -Force
-    Say "已產生：$zipOut" Green
+    Say "已產生完整版：$zipOut" Green
+    New-LiteZip $LiteZipOut
 }
 if (-not $NonInteractive) { Read-Host "`n按 Enter 關閉" }

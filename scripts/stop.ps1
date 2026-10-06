@@ -9,6 +9,14 @@ $PidFile = Join-Path $Base 'run\pids.json'
 
 function Say($msg) { if (-not $Quiet) { Write-Host $msg } }
 
+# 0. 先關掉主教師機的狀態視窗（start.ps1），否則它會把下面關掉的 MediaMTX／播放頁伺服器自動重新啟動
+#    （start.ps1 自己呼叫 stop.ps1 時是同一個行程，用 $PID 排除）
+$StartPs1 = Join-Path $Base 'scripts\start.ps1'
+Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
+    Where-Object { $_.CommandLine -and $_.CommandLine.IndexOf($StartPs1, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+                   $_.CommandLine -notlike '*publisher*' -and $_.ProcessId -ne $PID } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+
 # 1. 依紀錄的 PID 關閉
 if (Test-Path $PidFile) {
     $ids = Get-Content $PidFile -Raw | ConvertFrom-Json

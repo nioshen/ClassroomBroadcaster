@@ -30,18 +30,81 @@ function Set-Setting([string]$Key, [string]$ValueLiteral) {
 # 下載檔案、從網路解壓縮的檔案解除封鎖（避免 SmartScreen/執行原則擋住）
 function Unblock-All { Get-ChildItem -Path $Base -Recurse -File -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue }
 
+# 列出這台電腦可用的區網 IP：有預設閘道的實體網卡排最前面，虛擬網卡（Hyper-V、WSL、VPN…）排最後
+function Get-LanIPCandidates {
+    $list = @()
+    foreach ($c in @(Get-NetIPConfiguration -ErrorAction SilentlyContinue)) {
+        if (-not $c.NetAdapter -or $c.NetAdapter.Status -ne 'Up') { continue }
+        $virtual = ("$($c.InterfaceAlias) $($c.InterfaceDescription)") -match 'vEthernet|Hyper-V|VirtualBox|VMware|Loopback|Bluetooth|Tailscale|ZeroTier|WSL|TAP-|VPN|WireGuard|Npcap'
+        $gw = [bool]$c.IPv4DefaultGateway
+        $rank = if ($virtual) { 2 } elseif ($gw) { 0 } else { 1 }
+        foreach ($a in @($c.IPv4Address)) {
+            $ip = [string]$a.IPAddress
+            if (-not $ip -or $ip -like '127.*' -or $ip -like '169.254.*') { continue }
+            $list += New-Object psobject -Property @{
+                IP = $ip; Name = [string]$c.InterfaceAlias; Desc = [string]$c.InterfaceDescription
+                Gateway = $gw; Virtual = $virtual; Rank = $rank
+            }
+        }
+    }
+    return @($list | Sort-Object Rank, Name)
+}
+
 function Get-LanIP {
-    $cfg = Get-NetIPConfiguration -ErrorAction SilentlyContinue |
-        Where-Object { $_.IPv4DefaultGateway -and $_.NetAdapter.Status -eq 'Up' } |
-        Select-Object -First 1
-    if ($cfg) { return @($cfg.IPv4Address)[0].IPAddress }
-    $ip = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-        Where-Object {
-            $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' -and
-            $_.InterfaceAlias -notmatch 'vEthernet|VirtualBox|VMware|Loopback|Bluetooth|Tailscale|ZeroTier'
-        } | Select-Object -First 1
-    if ($ip) { return $ip.IPAddress }
+    $c = @(Get-LanIPCandidates)
+    if ($c.Count) { return $c[0].IP }
     return $null
+}
+
+# 決定學生連線用的 IP：settings.psd1 有填 ServerIP 就用它；
+# 有多張實體網卡時列出來讓老師選（10 秒內沒選就用預設值），並記住這次的選擇當下次的預設值
+function Select-LanIP($S) {
+    if ($S.ServerIP -and $S.ServerIP -ne 'auto') { return [string]$S.ServerIP }
+    $all = @(Get-LanIPCandidates)
+    if ($all.Count -eq 0) { return $null }
+    $real = @($all | Where-Object { -not $_.Virtual })
+    if ($real.Count -le 1) { return $all[0].IP }      # 只有一張實體網卡：不用問
+
+    $lastFile = Join-Path $Base 'run\last-ip.txt'
+    $last = if (Test-Path $lastFile) { (Get-Content $lastFile -Raw).Trim() } else { '' }
+    $def = 0
+    for ($i = 0; $i -lt $all.Count; $i++) { if ($all[$i].IP -eq $last) { $def = $i } }
+    $pick = $def
+
+    if (-not $NonInteractive) {
+        Say ''
+        Say '偵測到多張網卡，請選擇「學生電腦所在的教室網路」：' Yellow
+        for ($i = 0; $i -lt $all.Count -and $i -lt 9; $i++) {
+            $c = $all[$i]
+            $note = @()
+            if ($c.Gateway) { $note += '有預設閘道' }
+            if ($c.Virtual) { $note += '虛擬網卡' }
+            $mark = if ($i -eq $def) { '  ← 預設' } else { '' }
+            $color = if ($i -eq $def) { 'Green' } else { 'Gray' }
+            Say ("  [{0}] {1,-15}  {2}（{3}）{4}{5}" -f ($i + 1), $c.IP, $c.Name, $c.Desc,
+                $(if ($note.Count) { '，' + ($note -join '、') } else { '' }), $mark) $color
+        }
+        Say '按數字鍵選擇，按 Enter 使用預設值；10 秒內沒有選擇會自動使用預設值。'
+        Say '（要固定使用某個 IP、不再詢問，可在 settings.psd1 的 ServerIP 填入）' DarkGray
+        $deadline = (Get-Date).AddSeconds(10)
+        try {
+            while ((Get-Date) -lt $deadline) {
+                if ([Console]::KeyAvailable) {
+                    $k = [Console]::ReadKey($true)
+                    if ($k.Key -eq 'Enter') { break }
+                    $n = 0
+                    if ([int]::TryParse([string]$k.KeyChar, [ref]$n) -and $n -ge 1 -and $n -le [Math]::Min(9, $all.Count)) { $pick = $n - 1; break }
+                }
+                Start-Sleep -Milliseconds 100
+            }
+        } catch { }   # 沒有主控台（例如自動化測試）時直接用預設值
+        Say "使用 $($all[$pick].IP)（$($all[$pick].Name)）" Cyan
+    }
+    try {
+        New-Item -ItemType Directory -Force -Path (Split-Path $lastFile) | Out-Null
+        Set-Content $lastFile $all[$pick].IP -Encoding ASCII
+    } catch { }
+    return $all[$pick].IP
 }
 
 # 找 OBS：settings 指定路徑 → 登錄檔 → 預設安裝位置
@@ -71,6 +134,17 @@ function Start-Hidden([string]$File, [string]$Arguments, [string]$WorkDir) {
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
     return [Diagnostics.Process]::Start($psi)
+}
+
+# 直播中不讓螢幕關閉或電腦睡眠：螢幕一關，OBS 的「螢幕擷取」只會送出黑畫面，瀏覽器分享也會停在最後一張
+# 在狀態面板的迴圈裡定期呼叫（重設閒置計時，不改電源設定；程式結束後自動恢復）
+function Stay-Awake {
+    try {
+        if (-not ('CB.Power' -as [type])) {
+            Add-Type -Namespace CB -Name Power -MemberDefinition '[DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint esFlags);'
+        }
+        [void][CB.Power]::SetThreadExecutionState(3)   # ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED
+    } catch { }
 }
 
 function Test-Port([int]$port) {

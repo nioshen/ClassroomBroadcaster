@@ -37,7 +37,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           & .\scripts\build.ps1
           if (-not (Test-Path $env:CB_ZIP_OUT)) { throw 'zip not created' }
-          Get-Item $env:CB_ZIP_OUT | Select-Object Name, Length
+          if (-not (Test-Path dist\ClassroomBroadcaster-lite.zip)) { throw 'lite zip not created' }
+          Get-Item $env:CB_ZIP_OUT, dist\ClassroomBroadcaster-lite.zip | Select-Object Name, Length
           Get-Content mediamtx.version.txt, obs.version.txt
 
       - name: 自動化測試
@@ -70,7 +71,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ClassroomBroadcaster-full
-          path: dist/ClassroomBroadcaster-full.zip
+          path: |
+            dist/ClassroomBroadcaster-full.zip
+            dist/ClassroomBroadcaster-lite.zip
           compression-level: 0
           retention-days: 30
           if-no-files-found: ignore
@@ -84,7 +87,7 @@ jobs:
           MTX=$(cat mediamtx.version.txt | tr -d '\r\n')
           OBSV=$(cat obs.version.txt | tr -d '\r\n')
           gh release delete latest --yes --cleanup-tag || true
-          gh release create latest dist/ClassroomBroadcaster-full.zip \
-            --title "ClassroomBroadcaster 完整版（$(date +%Y-%m-%d)）" \
-            --notes "內含 MediaMTX ${MTX}、OBS Studio ${OBSV}（免安裝）、VC++ 執行階段。解壓縮後：簡易版點 lite-start.bat；OBS 版點 start.bat。" \
+          gh release create latest dist/ClassroomBroadcaster-full.zip dist/ClassroomBroadcaster-lite.zip \
+            --title "ClassroomBroadcaster（$(date +%Y-%m-%d)）" \
+            --notes "ClassroomBroadcaster-lite.zip：只有簡易版（約 40 KB，解壓縮後點 lite-start.bat）。ClassroomBroadcaster-full.zip：OBS 版，也包含簡易版，內含 MediaMTX ${MTX}、OBS Studio ${OBSV}（免安裝）、VC++ 執行階段（解壓縮後點 start.bat）。" \
             --latest

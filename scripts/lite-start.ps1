@@ -32,7 +32,7 @@ if (-not (Test-LiteFirewall)) {
 if (Test-Port $Port) {
     Fail "埠 $Port 已被使用。可能已經開了另一個直播程式（OBS 版或簡易版），請先關閉它；`n或在 settings.psd1 修改 HttpPort。"
 }
-$ServerIP = if ($S.ServerIP -and $S.ServerIP -ne 'auto') { $S.ServerIP } else { Get-LanIP }
+$ServerIP = Select-LanIP $S   # 多張網卡時會讓老師選擇
 if (-not $ServerIP) { $ServerIP = '127.0.0.1'; Say '偵測不到區網 IP，請在 settings.psd1 的 ServerIP 填入本機 IP。' Yellow }
 $StudentUrl = "http://${ServerIP}:$Port/"
 
@@ -69,6 +69,7 @@ $lastOut = $null; $lastTime = $null
 $RunUntil = if ($env:CB_RUN_SECONDS) { (Get-Date).AddSeconds([int]$env:CB_RUN_SECONDS) } else { $null }
 try {
     while ($true) {
+        Stay-Awake
         $st = $null
         try { $st = [ClassroomLite.Server]::StatusJson() | ConvertFrom-Json } catch {}
         try { Clear-Host } catch { }

@@ -46,10 +46,16 @@ foreach ($d in $RunDir, $LogDir) { New-Item -ItemType Directory -Force -Path $d 
 # 1. 先關掉上次沒關乾淨的程式
 & (Join-Path $PSScriptRoot 'stop.ps1') -Quiet -KeepOBS
 
-# 2. IP 與防火牆
-$ServerIP = if ($S.ServerIP -and $S.ServerIP -ne 'auto') { $S.ServerIP } else { Get-LanIP }
-if (-not $ServerIP) { Fail '偵測不到區網 IP，請在 settings.psd1 的 ServerIP 直接填入本機 IP。' }
+# 簡易版（或其他程式）還佔著網頁埠時，學生會連到那邊而看不到 OBS 畫面，先擋下來
 $HttpPort = [int]$S.HttpPort
+Start-Sleep -Milliseconds 500
+if (Test-Port $HttpPort) {
+    Fail "埠 $HttpPort 已被使用。可能簡易版（lite-start.bat）還開著，請先在它的黑色視窗按 Q 關閉；`n或在 settings.psd1 修改 HttpPort。"
+}
+
+# 2. IP 與防火牆
+$ServerIP = Select-LanIP $S   # 多張網卡時會讓老師選擇
+if (-not $ServerIP) { Fail '偵測不到區網 IP，請在 settings.psd1 的 ServerIP 直接填入本機 IP。' }
 $StudentUrl = "http://${ServerIP}:$HttpPort/"
 Say "伺服器 IP：$ServerIP" Cyan
 Say '設定 Windows 防火牆…'
@@ -116,6 +122,7 @@ $lastOut = $null; $lastTime = $null
 $RunUntil = if ($env:CB_RUN_SECONDS) { (Get-Date).AddSeconds([int]$env:CB_RUN_SECONDS) } else { $null }
 try {
     while ($true) {
+        Stay-Awake
         if ($mtx.HasExited) {
             Say 'MediaMTX 意外結束，重新啟動中…' Red
             $mtx = Start-Mtx; Save-Pids
