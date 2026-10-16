@@ -116,7 +116,7 @@ if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction Silent
 Start-Sleep -Seconds 2
 
 # ---------------------------------------------------------------- 5. 簡易版完整流程（lite-start.ps1）
-$env:CB_RUN_SECONDS = '240'
+$env:CB_RUN_SECONDS = '330'
 $proc = Start-Script 'lite-start.ps1' 'lite-start'
 if (Wait-Until { Test-Port 8080 } 60) {
     Record '簡易版：啟動伺服器' PASS
@@ -125,6 +125,13 @@ if (Wait-Until { Test-Port 8080 } 60) {
         $codec = if ($r.result -and $r.result.teacher) { $r.result.teacher.codec } else { '?' }
         if ($r.ok) { Record "簡易版：教師推流＋學生播放（$ch）" PASS "編碼 $codec" } else { Record "簡易版：教師推流＋學生播放（$ch）" FAIL "編碼 $codec，見 lite-$ch.json" }
     }
+    # 端到端延遲（教師端測試畫面裡的時鐘條碼 → 編碼 → 伺服器 → 學生頁解碼；雲端測試機沒有顯示卡，只供參考，不算失敗）
+    $p = Start-Process -FilePath 'node' -ArgumentList 'latency.mjs', 'lite-test', '15' -WorkingDirectory $PSScriptRoot -NoNewWindow -Wait -PassThru `
+        -RedirectStandardOutput (Join-Path $Out 'latency-lite-test.log') -RedirectStandardError (Join-Path $Out 'latency-lite-test.err')
+    $lj = Join-Path $Out 'latency-lite-test.json'
+    $l = if (Test-Path $lj) { Get-Content $lj -Raw -Encoding UTF8 | ConvertFrom-Json } else { $null }
+    if ($l -and $l.ok) { Record '簡易版：端到端延遲' PASS "中位數 $($l.medianMs) ms（10%–90%：$($l.p10Ms)–$($l.p90Ms) ms，$($l.samples) 個樣本）" }
+    else { Record '簡易版：端到端延遲' WARN '量測失敗，見 latency-lite-test.json' }
 } else { Record '簡易版：啟動伺服器' FAIL '60 秒內沒有啟動（見 lite-start.log）' }
 if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
 Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" | Where-Object { $_.CommandLine -like '*edge-teacher*' } |

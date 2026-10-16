@@ -49,8 +49,52 @@ function Clear-ObsSentinel([string]$Obs) {
     if (Test-Path $dir) { Get-ChildItem $dir -Filter 'run_*' -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue }
 }
 
-# 確認 OBS 有「Classroom」設定檔與場景；沒有就建立，推流網址不同就更新
-function Ensure-ObsConfig([string]$Obs, [string]$WhipUrl) {
+# 推流編碼器：x264 用 CPU 編碼；Intel 內顯（第 6 代以後，例如 i5-9500 的 UHD 630）用 Quick Sync 硬體編碼，幾乎不佔 CPU
+$X264Json = '{"rate_control":"CBR","bitrate":4000,"keyint_sec":1,"preset":"veryfast","profile":"baseline","tune":"zerolatency","x264opts":""}'
+$QsvJson  = '{"rate_control":"CBR","bitrate":4000,"max_bitrate":4000,"keyint_sec":1,"target_usage":"TU4","profile":"baseline","latency":"ultra-low","bframes":0}'
+
+function Get-ObsProfileDir([string]$Obs) { return (Join-Path (Get-ObsConfigRoot $Obs) 'basic\profiles\Classroom') }
+
+function Test-IntelQsv([string]$Obs) {
+    $dll = Join-Path (Split-Path (Split-Path (Split-Path $Obs))) 'obs-plugins\64bit\obs-qsv11.dll'
+    if (-not (Test-Path $dll)) { return $false }
+    try {
+        $gpu = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match 'Intel.*(UHD|Iris|Arc|HD Graphics [56]\d\d)' -and $_.ConfigManagerErrorCode -eq 0 }
+        return [bool]$gpu
+    } catch { return $false }
+}
+
+# settings.psd1 的 ObsEncoder：'auto'（預設）、'qsv' 或 'x264'
+function Get-ObsEncoderChoice($S, [string]$Obs) {
+    $want = if ($S -and $S.ObsEncoder) { [string]$S.ObsEncoder } else { 'auto' }
+    if ($want -eq 'x264' -or $want -eq 'qsv') { return $want }
+    if (Test-Path (Join-Path (Get-ObsProfileDir $Obs) 'cb-qsv-failed.txt')) { return 'x264' }
+    if (Test-IntelQsv $Obs) { return 'qsv' }
+    return 'x264'
+}
+
+function Set-ObsEncoder([string]$Obs, [string]$Choice) {
+    $profDir = Get-ObsProfileDir $Obs
+    $ini = Join-Path $profDir 'basic.ini'
+    $id = if ($Choice -eq 'qsv') { 'obs_qsv11_v2' } else { 'obs_x264' }
+    $text = [IO.File]::ReadAllText($ini)
+    if ($text -match '(?m)^Encoder=') { $text = [regex]::Replace($text, '(?m)^Encoder=[^\r\n]*', "Encoder=$id") }
+    else { $text = $text.Replace("[AdvOut]`r`n", "[AdvOut]`r`nEncoder=$id`r`n") }
+    Write-NoBom $ini $text
+    Write-NoBom (Join-Path $profDir 'streamEncoder.json') $(if ($Choice -eq 'qsv') { $QsvJson } else { $X264Json })
+    Write-NoBom (Join-Path $profDir 'cb-encoder.txt') $Choice
+}
+
+# 自動選了 Quick Sync 卻開不了播：記下來，之後這台電腦都改用 x264
+function Set-QsvFailed([string]$Obs) {
+    Write-NoBom (Join-Path (Get-ObsProfileDir $Obs) 'cb-qsv-failed.txt') (Get-Date -Format s)
+    Set-ObsEncoder $Obs 'x264'
+}
+
+# 確認 OBS 有「Classroom」設定檔與場景；沒有就建立，推流網址不同就更新。回傳使用的編碼器（qsv / x264）
+function Ensure-ObsConfig([string]$Obs, [string]$WhipUrl, $S = $null) {
+    if (-not $S) { $S = Get-Settings }
     $cfgRoot = Get-ObsConfigRoot $Obs
     $basic = Join-Path $cfgRoot 'basic'
     $profDir = Join-Path $basic 'profiles\Classroom'
@@ -87,9 +131,8 @@ function Ensure-ObsConfig([string]$Obs, [string]$WhipUrl) {
                "[AdvOut]`r`nEncoder=obs_x264`r`nAudioEncoder=ffmpeg_opus`r`nTrackIndex=1`r`nApplyServiceSettings=true`r`nTrack1Bitrate=128`r`n`r`n" +
                "[Audio]`r`nSampleRate=48000`r`nChannelSetup=Stereo`r`n"
         Write-NoBom (Join-Path $profDir 'basic.ini') $ini
-        # x264 低延遲：CBR 4 Mbps、關鍵影格 1 秒、baseline（無 B 影格）
-        Write-NoBom (Join-Path $profDir 'streamEncoder.json') `
-            '{"rate_control":"CBR","bitrate":4000,"keyint_sec":1,"preset":"veryfast","profile":"baseline","tune":"zerolatency","x264opts":""}'
+        # 低延遲：CBR 4 Mbps、關鍵影格 1 秒、baseline（無 B 影格）；編碼器在下面依這台電腦選擇
+        Write-NoBom (Join-Path $profDir 'streamEncoder.json') $X264Json
         Write-NoBom $svcFile $svcJson
         Say "已建立 OBS 設定檔 Classroom（螢幕 ${bw}×${bh}，輸出 ${ow}×${oh} @30fps）" Green
     } elseif (-not ((Get-Content $svcFile -Raw -ErrorAction SilentlyContinue) -like "*$WhipUrl*")) {
@@ -155,6 +198,17 @@ function Ensure-ObsConfig([string]$Obs, [string]$WhipUrl) {
     } else {
         Update-ObsMonitor $sceneFile
     }
+
+    # 編碼器：選擇改變（或第一次使用這個版本）時才寫入，老師之後在 OBS 手動改的設定不會每次被蓋掉
+    $choice = Get-ObsEncoderChoice $S $Obs
+    $marker = Join-Path $profDir 'cb-encoder.txt'
+    $applied = if (Test-Path $marker) { (Get-Content $marker -Raw).Trim() } else { '' }
+    if ($applied -ne $choice) {
+        Set-ObsEncoder $Obs $choice
+        if ($choice -eq 'qsv') { Say 'OBS 推流改用 Intel Quick Sync 硬體編碼（CPU 負擔低）' Green }
+        elseif ($applied) { Say 'OBS 推流改用 x264（CPU 編碼）' Green }
+    }
+    return $choice
 }
 
 # 免安裝版 OBS 需要 Microsoft Visual C++ 2015-2022 執行階段；缺少時用隨附的安裝檔靜默安裝（只做一次）

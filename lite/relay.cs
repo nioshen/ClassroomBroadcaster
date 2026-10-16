@@ -94,10 +94,12 @@ namespace ClassroomLite
             }
         }
 
-        public Task SendAsync(byte[] data, bool text) { return SendFrame(text ? 1 : 2, data); }
-        public Task PingAsync() { return SendFrame(9, new byte[0]); }
+        public Task PingAsync() { return SendFramed(Frame(9, new byte[0])); }
+        Task SendFrame(int op, byte[] data) { return SendFramed(Frame(op, data)); }
 
-        async Task SendFrame(int op, byte[] data)
+        // Builds a complete (unmasked) WebSocket frame. The relay frames each video message once and sends the
+        // same bytes to every viewer, instead of copying it again for each of the 60 connections.
+        public static byte[] Frame(int op, byte[] data)
         {
             int n = data.Length;
             int hl = n < 126 ? 2 : (n < 65536 ? 4 : 10);
@@ -107,6 +109,11 @@ namespace ClassroomLite
             else if (n < 65536) { f[1] = 126; f[2] = (byte)(n >> 8); f[3] = (byte)n; }
             else { f[1] = 127; long L = n; for (int i = 0; i < 8; i++) f[9 - i] = (byte)(L >> (8 * i)); }
             Buffer.BlockCopy(data, 0, f, hl, n);
+            return f;
+        }
+
+        public async Task SendFramed(byte[] f)
+        {
             await writeLock.WaitAsync();
             try { await stream.WriteAsync(f, 0, f.Length); }
             finally { writeLock.Release(); }
@@ -121,7 +128,7 @@ namespace ClassroomLite
 
     public class Msg
     {
-        public byte[] Data;
+        public byte[] Data;                 // complete WebSocket frame
         public bool Text;
         public byte Kind;
     }
@@ -143,8 +150,8 @@ namespace ClassroomLite
     {
         public string Name;
         public bool AnyPublisher;           // allow publishing from any IP (otherwise loopback + allowed IPs)
-        public byte[] Init;
-        public List<byte[]> Gop = new List<byte[]>();
+        public byte[] Init;                 // WebSocket frames (see WsConn.Frame)
+        public List<Msg> Gop = new List<Msg>();
         public long GopBytes;
         public WsConn Publisher;
         public string PublisherIp = "";
@@ -410,27 +417,28 @@ namespace ClassroomLite
             byte kind = msg[0];
             if (kind < 1 || kind > 3) return;
             Interlocked.Add(ref room.BytesIn, msg.Length);
+            byte[] frame = WsConn.Frame(2, msg);
             lock (room.Lock)
             {
                 if (kind == 1)
                 {
-                    room.Init = msg;
+                    room.Init = frame;
                     room.Gop.Clear();
                     room.GopBytes = 0;
                 }
                 else if (kind == 2)
                 {
                     room.Gop.Clear();
-                    room.Gop.Add(msg);
-                    room.GopBytes = msg.Length;
+                    room.Gop.Add(new Msg { Data = frame, Kind = kind });
+                    room.GopBytes = frame.Length;
                 }
-                else if (room.Gop.Count > 0 && room.GopBytes + msg.Length < MaxGopBytes)
+                else if (room.Gop.Count > 0 && room.GopBytes + frame.Length < MaxGopBytes)
                 {
-                    room.Gop.Add(msg);
-                    room.GopBytes += msg.Length;
+                    room.Gop.Add(new Msg { Data = frame, Kind = kind });
+                    room.GopBytes += frame.Length;
                 }
                 // enqueue while holding the room lock so every viewer gets the same order
-                foreach (Viewer v in room.Viewers) Enqueue(v, msg, kind, false);
+                foreach (Viewer v in room.Viewers) Enqueue(v, frame, kind, false);
             }
         }
 
@@ -444,11 +452,11 @@ namespace ClassroomLite
             lock (room.Lock)
             {
                 room.Viewers.Add(v);
-                Enqueue(v, Encoding.UTF8.GetBytes(room.Publisher == null ? "{\"type\":\"offline\"}" : "{\"type\":\"online\"}"), 0, true);
+                Enqueue(v, WsConn.Frame(1, Encoding.UTF8.GetBytes(room.Publisher == null ? "{\"type\":\"offline\"}" : "{\"type\":\"online\"}")), 0, true);
                 if (room.Init != null)
                 {
                     Enqueue(v, room.Init, 1, false);
-                    foreach (byte[] m in room.Gop) Enqueue(v, m, m[0], false);
+                    foreach (Msg m in room.Gop) Enqueue(v, m.Data, m.Kind, false);
                 }
             }
             try
@@ -465,7 +473,7 @@ namespace ClassroomLite
 
         static void BroadcastText(Room room, string text)
         {
-            byte[] b = Encoding.UTF8.GetBytes(text);
+            byte[] b = WsConn.Frame(1, Encoding.UTF8.GetBytes(text));
             lock (room.Lock)
             {
                 foreach (Viewer v in room.Viewers) Enqueue(v, b, 0, true);
@@ -531,7 +539,7 @@ namespace ClassroomLite
                         m = v.Q.Dequeue();
                         v.QBytes -= m.Data.Length;
                     }
-                    await v.Ws.SendAsync(m.Data, m.Text);
+                    await v.Ws.SendFramed(m.Data);
                     if (!m.Text) Interlocked.Add(ref v.Room.BytesOut, m.Data.Length);
                 }
             }

@@ -17,7 +17,7 @@ if ($Role -eq 'publisher') {
     if (-not $obs) { Fail '找不到 OBS。請使用完整版資料夾（含 obs 資料夾），或在這台電腦安裝 OBS Studio。' }
     $main = Get-MainServerIP $S 8889
     if (Test-ObsPortable $obs) { Ensure-VCRedist }
-    Ensure-ObsConfig $obs "http://${main}:8889/teacher2/whip"
+    $null = Ensure-ObsConfig $obs "http://${main}:8889/teacher2/whip" $S
     New-DesktopShortcut '教室直播 開始（教師2）' (Join-Path $Base 'teacher2.bat') "$obs,0" -AllUsers
     if (Get-Process obs64 -ErrorAction SilentlyContinue) {
         Say 'OBS 已在執行中：請在 OBS 按「開始直播」。' Yellow
@@ -101,15 +101,18 @@ Write-StudentShortcuts $StudentUrl
 # 6. 啟動 OBS（第一次會自動建立設定）
 New-DesktopShortcut '教室直播 開始' (Join-Path $Base 'start.bat') "$MtxExe,0" -AllUsers
 New-DesktopShortcut '教室直播 停止' (Join-Path $Base 'stop.bat') "$env:SystemRoot\System32\shell32.dll,27" -AllUsers
+$qsvCheckAt = $null
 if ($S.StartOBS) {
     $obs = Get-ObsPath $S
     if (Get-Process obs64 -ErrorAction SilentlyContinue) {
         Say 'OBS 已在執行中：請在 OBS 按「開始直播」。' Yellow
     } elseif ($obs) {
         if (Test-ObsPortable $obs) { Ensure-VCRedist }
-        Ensure-ObsConfig $obs 'http://127.0.0.1:8889/teacher1/whip'
+        $encoder = Ensure-ObsConfig $obs 'http://127.0.0.1:8889/teacher1/whip' $S
         Say '啟動 OBS 並開始直播…'
         Start-Obs $S $obs
+        # 自動選用的 Quick Sync 若 45 秒內都沒開播成功（舊驅動程式等），改用 x264 重開 OBS
+        if ($encoder -eq 'qsv' -and $S.ObsEncoder -ne 'qsv') { $qsvCheckAt = (Get-Date).AddSeconds(45) }
     } else {
         Say '找不到 OBS，請手動開啟 OBS 並按「開始直播」。' Yellow
     }
@@ -135,6 +138,21 @@ try {
         }
         $list = $null
         try { $list = Invoke-RestMethod -Uri 'http://127.0.0.1:9997/v3/paths/list' -TimeoutSec 2 -UseBasicParsing } catch {}
+        if ($qsvCheckAt -and $list) {
+            $t1 = $list.items | Where-Object { $_.name -eq 'teacher1' }
+            if ($t1 -and ($t1.online -or $t1.ready)) { $qsvCheckAt = $null }
+            elseif ((Get-Date) -gt $qsvCheckAt) {
+                $qsvCheckAt = $null
+                if (Get-Process obs64 -ErrorAction SilentlyContinue) {
+                    Say 'Intel Quick Sync 硬體編碼無法開播，改用 x264 重新開啟 OBS…' Yellow
+                    Get-Process obs64 -ErrorAction SilentlyContinue | Stop-Process -Force
+                    Start-Sleep -Seconds 2
+                    Set-QsvFailed $obs
+                    Start-Obs $S $obs
+                    Start-Sleep -Seconds 3
+                }
+            }
+        }
 
         try { Clear-Host } catch { }
         Say '============ ClassroomBroadcaster 教室直播 ============' Cyan
