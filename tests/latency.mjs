@@ -3,6 +3,9 @@
 // video it plays.  latency = time the frame was shown on the student page - time drawn into the barcode.
 //   node latency.mjs lite  [seconds=15]   needs the lite server on :8080 (this script starts the teacher page)
 //   node latency.mjs whep  [seconds=15]   needs start.ps1 running and OBS streaming teacher1
+//   node latency.mjs lite-test [seconds=15]  lite server on :8080; the teacher page streams its built-in test pattern
+//                                          (?test=1, barcode drawn into the frame) instead of the screen: no clock
+//                                          window or real desktop needed, e.g. on a CI machine with a small screen
 // The barcode window covers the screen for the duration of the test.  Writes out/latency-<mode>.json
 import { chromium } from 'playwright-core';
 import fs from 'node:fs';
@@ -36,7 +39,14 @@ draw();
 const browsers = [];
 try {
   let teacher = null;
-  if (mode === 'lite') {
+  const testPattern = mode === 'lite-test';
+  if (testPattern) {
+    const tb = await chromium.launch({ channel: 'msedge', headless: false });
+    browsers.push(tb);
+    teacher = await (await tb.newContext()).newPage();
+    await teacher.goto('http://localhost:8080/teacher.html?test=1&autostart=1');
+    await sleep(2000);
+  } else if (mode === 'lite') {
     const tb = await chromium.launch({ channel: 'msedge', headless: false, args: ['--use-fake-ui-for-media-stream'] });
     browsers.push(tb);
     teacher = await (await tb.newContext()).newPage();
@@ -45,24 +55,28 @@ try {
     await sleep(2000);
   }
   // maximized clock window on top: vertical stripes, so any row in the middle of the screen carries the code
-  const cb = await chromium.launch({ channel: 'msedge', headless: false, args: ['--start-maximized', '--no-first-run'] });
-  browsers.push(cb);
-  const clock = await (await cb.newContext({ viewport: null })).newPage();
-  await clock.goto(clockPage);
-  // keep the clock above every other window (e.g. the preview page start.ps1 opens maximized)
-  try {
-    execFileSync('powershell.exe', ['-NoProfile', '-Command',
-      "Add-Type -Namespace CB -Name Top -MemberDefinition '[DllImport(\"user32.dll\")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int cx, int cy, uint f);';" +
-      "Get-Process msedge | Where-Object { $_.MainWindowTitle -like 'CB-LATENCY-CLOCK*' } | ForEach-Object { [void][CB.Top]::SetWindowPos($_.MainWindowHandle, [IntPtr](-1), 0, 0, 0, 0, 3) }"]);
-  } catch (e) { result.errors.push('topmost: ' + e.message); }  await sleep(3000);
+  if (!testPattern) {
+    const cb = await chromium.launch({ channel: 'msedge', headless: false, args: ['--start-maximized', '--no-first-run'] });
+    browsers.push(cb);
+    const clock = await (await cb.newContext({ viewport: null })).newPage();
+    await clock.goto(clockPage);
+    // keep the clock above every other window (e.g. the preview page start.ps1 opens maximized)
+    try {
+      execFileSync('powershell.exe', ['-NoProfile', '-Command',
+        "Add-Type -Namespace CB -Name Top -MemberDefinition '[DllImport(\"user32.dll\")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int cx, int cy, uint f);';" +
+        "Get-Process msedge | Where-Object { $_.MainWindowTitle -like 'CB-LATENCY-CLOCK*' } | ForEach-Object { [void][CB.Top]::SetWindowPos($_.MainWindowHandle, [IntPtr](-1), 0, 0, 0, 0, 3) }"]);
+    } catch (e) { result.errors.push('topmost: ' + e.message); }  await sleep(3000);
+  }
 
   const vb = await chromium.launch({ channel: 'chrome', headless: true, args: ['--autoplay-policy=no-user-gesture-required'] });
   browsers.push(vb);
   const viewer = await (await vb.newContext({ viewport: { width: 1920, height: 1080 } })).newPage();
   await viewer.goto('http://127.0.0.1:8080/');
   await sleep(6000);
-  const screenW = +(process.env.CB_SCREEN_W || 1920);
-  const r = await viewer.evaluate(async ({ seconds, BITS, BLOCK, screenW }) => {
+  // test pattern: 1280x720 canvas, 32 px blocks in rows 560-720 (see testStream() in teacher.html)
+  const screenW = testPattern ? 1280 : +(process.env.CB_SCREEN_W || 1920);
+  const block = testPattern ? 32 : BLOCK, rowFrac = testPattern ? 640 / 720 : 0.5;
+  const r = await viewer.evaluate(async ({ seconds, BITS, BLOCK, screenW, rowFrac }) => {
     const v = document.querySelector('video');
     const lat = []; let bad = 0;
     const cv = new OffscreenCanvas(16, 16); const g = cv.getContext('2d', { willReadFrequently: true });
@@ -76,7 +90,7 @@ try {
           const n = 4 + BITS;
           // one row from the middle of the screen (the clock window is maximized; its stripes start at the left edge)
           cv.width = Math.ceil(n * BLOCK * k) + 24; cv.height = 1;
-          g.drawImage(v, 0, Math.round(H / 2), cv.width, 1, 0, 0, cv.width, 1);
+          g.drawImage(v, 0, Math.round(H * rowFrac), cv.width, 1, 0, 0, cv.width, 1);
           const px = g.getImageData(0, 0, cv.width, 1).data;
           const lum = (x) => (px[x * 4] + px[x * 4 + 1] + px[x * 4 + 2]) / 3;
           let bits = null;
@@ -98,7 +112,7 @@ try {
       setTimeout(done, seconds * 1000 + 3000);      // no frames at all: stop waiting
     });
     return { lat, bad, w: v.videoWidth, h: v.videoHeight, status: document.getElementById('statusText').textContent };
-  }, { seconds: SECONDS, BITS, BLOCK, screenW });
+  }, { seconds: SECONDS, BITS, BLOCK: block, screenW, rowFrac });
   await viewer.screenshot({ path: fileURLToPath(new URL(`latency-${mode}-viewer.png`, OUT)) });
   const s = r.lat.slice().sort((a, b) => a - b);
   const pct = (p) => s.length ? s[Math.min(s.length - 1, Math.floor(p * s.length))] : null;

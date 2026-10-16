@@ -11,5 +11,5 @@ if ($Action -eq 'kill') {
 }
 $S = Get-Settings
 $obs = Get-ObsPath $S
-Ensure-ObsConfig $obs 'http://127.0.0.1:8889/teacher1/whip'
+$null = Ensure-ObsConfig $obs 'http://127.0.0.1:8889/teacher1/whip'
 Start-Obs $S $obs

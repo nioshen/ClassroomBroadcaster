@@ -7,7 +7,7 @@ const TIMESCALE = 90000;
 let cfg = null;            // { wsUrl, fps, bitrate, keySec }
 let reader = null, latest = null, ticker = null, stopped = true;
 let ws = null, wsTimer = null;
-let encoder = null, encCodec = '', encW = 0, encH = 0;
+let encoder = null, encCodec = '', encHw = false, encW = 0, encH = 0;
 let frameNo = 0, lastKeyNo = -1e9, forceKey = true, seq = 1, nextTs = 0;
 let lastInit = null, lastInitKey = '';
 let sentBytes = 0, sentFrames = 0, statTimer = null;
@@ -35,7 +35,7 @@ function start(m) {
   connectWs();
   restartTicker();
   statTimer = setInterval(() => {
-    post('stats', { kbps: Math.round(sentBytes * 8 / 1000), fps: sentFrames, width: encW, height: encH, codec: encCodec,
+    post('stats', { kbps: Math.round(sentBytes * 8 / 1000), fps: sentFrames, width: encW, height: encH, codec: encCodec, hw: encHw,
       wsOpen: !!(ws && ws.readyState === 1) });
     sentBytes = 0; sentFrames = 0;
   }, 1000);
@@ -87,29 +87,32 @@ function restartTicker() {
 
 function closeEncoder() {
   if (encoder) { try { encoder.close(); } catch (e) {} }
-  encoder = null; encW = 0; encH = 0; encCodec = '';
+  encoder = null; encW = 0; encH = 0; encCodec = ''; encHw = false;
 }
 
+// Hardware encoders first (Intel Quick Sync / NVIDIA / AMD: almost no CPU), then whatever the browser offers
 async function pickCodec(w, h) {
   const big = w * h > 1920 * 1088;
   const lvl = big ? '33' : '28';                 // H.264 level 5.1 / 4.0
-  let candidates = ['avc1.6400' + lvl, 'avc1.4d00' + lvl, 'avc1.42e0' + lvl, big ? 'vp09.00.51.08' : 'vp09.00.41.08'];
-  if (cfg.codec === 'vp9') candidates = candidates.filter(c => c.startsWith('vp09'));
-  if (cfg.codec === 'avc') candidates = candidates.filter(c => c.startsWith('avc1'));
-  candidates = candidates.filter(c => !badCodecs.has(c));
-  for (const codec of candidates) {
-    const conf = encoderConfig(codec, w, h);
-    try {
-      const s = await VideoEncoder.isConfigSupported(conf);
-      if (s.supported) return conf;
-    } catch (e) {}
+  let codecs = ['avc1.6400' + lvl, 'avc1.4d00' + lvl, 'avc1.42e0' + lvl, big ? 'vp09.00.51.08' : 'vp09.00.41.08'];
+  if (cfg.codec === 'vp9') codecs = codecs.filter(c => c.startsWith('vp09'));
+  if (cfg.codec === 'avc') codecs = codecs.filter(c => c.startsWith('avc1'));
+  for (const hw of ['prefer-hardware', 'no-preference']) {
+    for (const codec of codecs) {
+      if (badCodecs.has(codec + '|' + hw)) continue;
+      const conf = encoderConfig(codec, w, h, hw);
+      try {
+        const s = await VideoEncoder.isConfigSupported(conf);
+        if (s.supported) return conf;
+      } catch (e) {}
+    }
   }
   return null;
 }
 
-function encoderConfig(codec, w, h) {
+function encoderConfig(codec, w, h, hw) {
   const c = { codec, width: w, height: h, bitrate: cfg.bitrate, framerate: cfg.fps,
-    latencyMode: 'realtime', bitrateMode: 'variable' };
+    latencyMode: 'realtime', bitrateMode: 'variable', hardwareAcceleration: hw };
   if (codec.startsWith('avc1')) c.avc = { format: 'avc' };
   return c;
 }
@@ -123,14 +126,14 @@ async function ensureEncoder(w, h) {
     closeEncoder();
     const conf = await pickCodec(w, h);
     if (!conf) { post('error', { message: '此瀏覽器不支援 H.264／VP9 編碼，請更新 Edge 或 Chrome。' }); return false; }
-    const codecInUse = conf.codec;
+    const codecInUse = conf.codec, keyInUse = conf.codec + '|' + conf.hardwareAcceleration;
     encoder = new VideoEncoder({ output: onChunk, error: (e) => {
-      badCodecs.add(codecInUse);             // try the next codec on the next tick
+      badCodecs.add(keyInUse);               // try the next codec on the next tick
       post('error', { message: '編碼器 ' + codecInUse + ' 發生錯誤，改用其他編碼方式：' + e.message });
       closeEncoder();
     } });
     encoder.configure(conf);
-    encW = w; encH = h; encCodec = conf.codec;
+    encW = w; encH = h; encCodec = conf.codec; encHw = conf.hardwareAcceleration === 'prefer-hardware';
     forceKey = true;
     return true;
   } finally { configuring = false; }

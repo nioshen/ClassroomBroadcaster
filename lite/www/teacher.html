@@ -69,6 +69,7 @@
       <div class="stat"><b id="sRate">–</b><span>位元率 Mbps</span></div>
       <div class="stat"><b id="sRes">–</b><span>解析度</span></div>
     </div>
+    <p class="tip" id="encInfo"></p>
   </div>
 
   <div class="panel">
@@ -133,6 +134,10 @@
       g.fillStyle = '#9cdcfe'; g.font = '64px monospace';
       g.fillText('T=' + Date.now(), 60, 200);
       g.fillStyle = '#ce9178'; g.fillRect((Date.now() / 5) % c.width, 400, 80, 80);
+      // 4 sync blocks + 32-bit timestamp (ms) as a barcode along the bottom, for automated latency measurement
+      const t = Date.now() >>> 0, bits = [1, 0, 1, 0];
+      for (let i = 31; i >= 0; i--) bits.push((t >>> i) & 1);
+      bits.forEach((b, i) => { g.fillStyle = b ? '#fff' : '#000'; g.fillRect(i * 32, 560, 32, 160); });
     }, 33);
     return c.captureStream(30);
   }
@@ -172,7 +177,7 @@
     if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
     $('preview').srcObject = null;
     live = false; wsOpen = false;
-    $('sFps').textContent = '–'; $('sRate').textContent = '–'; $('sRes').textContent = '–';
+    $('sFps').textContent = '–'; $('sRate').textContent = '–'; $('sRes').textContent = '–'; $('encInfo').textContent = '';
     renderButtons();
   }
 
@@ -183,6 +188,8 @@
       $('sRate').textContent = (m.kbps / 1000).toFixed(1);
       $('sRes').textContent = m.width ? m.width + '×' + m.height : '–';
       $('sRes').title = m.codec || '';
+      $('encInfo').textContent = !m.codec ? '' : '編碼：' + (m.codec.startsWith('avc1') ? 'H.264' : 'VP9') +
+        (m.hw ? '，使用顯示晶片硬體編碼（CPU 負擔低）' : '，使用 CPU 軟體編碼（電腦較舊時建議選「省頻寬」）');
       if (m.wsOpen !== wsOpen) { wsOpen = m.wsOpen; renderButtons(); }
     } else if (m.type === 'ws') {
       wsOpen = m.open; renderButtons();

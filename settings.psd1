@@ -20,6 +20,10 @@
     ObsProfile    = 'Classroom'
     ObsCollection = 'Classroom'
 
+    # [OBS 版] 推流編碼器：'auto' = Intel 內顯（第 6 代以後）用 Quick Sync 硬體編碼，其他用 x264；
+    #          'qsv' = 一律用 Quick Sync；'x264' = 一律用 CPU 編碼（硬體編碼有問題時改這個）
+    ObsEncoder    = 'auto'
+
     # [OBS 版] 執行 stop.bat 時是否一併關閉 OBS
     StopOBSOnExit = $false
 
