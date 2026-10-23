@@ -22,6 +22,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          # 測試機映像內建的 Node 可能是舊版；一律取 22.x 最新修補版（2026-10-21 安全更新：22.23.4 起修補 Brotli、TLS、DNS 等漏洞）
+          check-latest: true
+
+      - name: 確認 Node.js 已含最新安全修補
+        shell: bash
+        run: |
+          node -e "const [a,b,c]=process.versions.node.split('.').map(Number); const ok=a>22||(a===22&&(b>23||(b===23&&c>=4))); console.log('Node.js', process.version); if(!ok){console.error('Node.js 版本低於 22.23.4，未含 2026-10 安全修補'); process.exit(1)}"
 
       - name: 安裝測試工具（Playwright，使用測試機內建的 Edge / Chrome）
         working-directory: tests
